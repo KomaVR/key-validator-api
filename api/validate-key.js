@@ -4,31 +4,65 @@ import crypto from 'crypto';
 
 export default async function handler(req, res) {
   const key = req.query.key;
-  if (!key) return res.status(400).json({ error: 'Missing key parameter' });
+  if (!key) {
+    return res.status(400).json({ error: 'Missing key parameter' });
+  }
 
+  // Grab env
   const GIST_TOKEN = process.env.GIST_TOKEN;
   const GIST_ID    = process.env.GIST_ID;
-  const PRIV_KEY   = process.env.RSA_PRIVATE_KEY; // full PEM
+  const rawKey     = process.env.RSA_PRIVATE_KEY;
+  // If you ended up pasting literal "\n" sequences, you can transform here:
+  const PRIV_KEY = rawKey?.includes("\\n") ? rawKey.replace(/\\n/g, "\n") : rawKey;
 
+  // Debug: log presence (remove or lower in prod later)
+  console.log('>> ENV presence:', {
+    GIST_TOKEN: !!GIST_TOKEN,
+    GIST_ID: !!GIST_ID,
+    RSA_PRIVATE_KEY: !!PRIV_KEY
+  });
   if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
+    console.error('>> Server misconfigured: missing env var');
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  // Fetch private gist
-  const gistUrl = https://api.github.com/gists/${GIST_ID};
-  const gistResp = await fetch(gistUrl, {
-    headers: {
-      'Authorization': token ${GIST_TOKEN},
-      'Accept': 'application/vnd.github.v3+json'
-    }
-  });
-  if (!gistResp.ok) {
-    return res.status(502).json({ error: 'Failed to fetch keys' });
+  // Build URL correctly
+  const gistUrl = `https://api.github.com/gists/${GIST_ID}`;
+  let gistResp;
+  try {
+    gistResp = await fetch(gistUrl, {
+      headers: {
+        'Authorization': `token ${GIST_TOKEN}`,
+        'User-Agent': 'key-validator-api',
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    });
+  } catch (err) {
+    console.error('Network error fetching gist:', err);
+    return res.status(502).json({ error: 'Failed to fetch keys (network)' });
   }
-  const gist = await gistResp.json();
-  const file = gist.files?.['keys.txt'];
+
+  if (!gistResp.ok) {
+    const text = await gistResp.text();
+    console.error('GitHub API error:', gistResp.status, text);
+    return res.status(502).json({
+      error: 'Failed to fetch keys',
+      status: gistResp.status,
+      body: text
+    });
+  }
+
+  let gistJson;
+  try {
+    gistJson = await gistResp.json();
+  } catch (err) {
+    console.error('Invalid JSON from GitHub:', err);
+    return res.status(502).json({ error: 'Invalid JSON from GitHub' });
+  }
+
+  const file = gistJson.files?.['keys.txt'];
   let found = false, redeemed_by = null, redeemed_at = null;
-  if (file && file.content) {
+  if (file && typeof file.content === 'string') {
     for (let line of file.content.split('\n')) {
       line = line.trim();
       if (!line || line.startsWith('#')) continue;
@@ -43,13 +77,14 @@ export default async function handler(req, res) {
         break;
       }
     }
+  } else {
+    console.warn('keys.txt missing or empty in gist:', gistJson.files);
   }
-  // decide valid only if found and not redeemed
+
   const valid = found && redeemed_by === null;
   const payload = { key, valid, redeemed_by, redeemed_at };
   const payloadJson = JSON.stringify(payload);
 
-  // Sign with RSA private key
   try {
     const sign = crypto.createSign('RSA-SHA256');
     sign.update(payloadJson);
