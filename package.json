@@ -1,8 +1,7 @@
 {
   "name": "key-validator-api",
   "version": "1.0.0",
-  "engines": {
-    "node": "18.x"
-  },
+  "type": "module",
+  "engines": { "node": "18.x" },
   "dependencies": {}
 }
