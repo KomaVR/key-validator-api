@@ -3,13 +3,12 @@ import fetch from 'node-fetch';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
-  const GIST_TOKEN = process.env.GIST_TOKEN;
-  const GIST_ID    = process.env.GIST_ID;
-  const rawKey     = process.env.RSA_PRIVATE_KEY;
-  const PRIV_KEY   = rawKey?.includes("\\n") ? rawKey.replace(/\\n/g, "\n") : rawKey;
+  const GIST_TOKEN  = process.env.GIST_TOKEN;
+  const GIST_ID     = process.env.GIST_ID;
+  const HMAC_SECRET = process.env.HMAC_SECRET;  // must match Python bot’s HMAC_SECRET
 
-  if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
-    console.error('Server misconfigured: missing env var');
+  if (!GIST_TOKEN || !GIST_ID || !HMAC_SECRET) {
+    console.error('Server misconfigured: missing GIST_TOKEN, GIST_ID, or HMAC_SECRET');
     if (req.method === 'POST') {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
@@ -17,7 +16,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  // Check raw key in gist (unredeemed)
+  // Fetch gist and check if key exists (unredeemed).
   async function isKeyValidInGist(key) {
     try {
       const gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
@@ -37,15 +36,11 @@ export default async function handler(req, res) {
         console.warn('keys.txt missing or empty in gist');
         return false;
       }
+      // Each line is a raw key
       for (let line of file.content.split('\n')) {
         line = line.trim();
-        if (!line || line.startsWith('#')) continue;
-        const parts = line.split(',', 4);
-        const [k, roleId, by, at] = parts;
-        if (k === key) {
-          if (by && by.trim() !== '') {
-            return false;
-          }
+        if (!line) continue;
+        if (line === key) {
           return true;
         }
       }
@@ -56,24 +51,27 @@ export default async function handler(req, res) {
     }
   }
 
-  // Verify signature over payloadObj = { key }
-  function verifySignature(payloadObj, signatureB64) {
+  // Verify HMAC signature over payloadObj = { key }
+  function verifyHmacSignature(payloadObj, signatureHex) {
     try {
-      const publicKeyObj = crypto.createPublicKey(PRIV_KEY);
       const payloadJson = JSON.stringify(payloadObj);
-      const verifier = crypto.createVerify('RSA-SHA256');
-      verifier.update(payloadJson);
-      verifier.end();
-      const sigBuf = Buffer.from(signatureB64, 'base64');
-      return verifier.verify(publicKeyObj, sigBuf);
+      const hmac = crypto.createHmac('sha256', HMAC_SECRET);
+      hmac.update(payloadJson);
+      const expectedHex = hmac.digest('hex');
+      const sigBuf = Buffer.from(signatureHex, 'hex');
+      const expBuf = Buffer.from(expectedHex, 'hex');
+      if (sigBuf.length !== expBuf.length) {
+        return false;
+      }
+      return crypto.timingSafeEqual(sigBuf, expBuf);
     } catch (err) {
-      console.error('Signature verification error:', err);
+      console.error('HMAC verification error:', err);
       return false;
     }
   }
 
   if (req.method === 'POST') {
-    // Expect JSON body: { payload: { key: "..." }, signature: "base64..." }
+    // Expect JSON body: { payload: { key: "..." }, signature: "hexstring" }
     let body;
     try {
       body = await parseJsonBody(req);
@@ -92,8 +90,8 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Verify signature over {"key": "..."}
-    if (!verifySignature({ key }, signature)) {
+    // Verify HMAC over {"key": "..."}
+    if (!verifyHmacSignature({ key }, signature)) {
       console.warn('Signature invalid');
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
@@ -104,37 +102,17 @@ export default async function handler(req, res) {
     return res.status(200).send(keyOk ? 'valid' : 'invalid');
   }
 
+  // Disallow GET for validation. If you need a GET route for signing, handle separately.
+  res.setHeader('Allow', 'POST');
   if (req.method === 'GET') {
-    // Sign payload { key } only
-    const key = req.query.key;
-    if (!key) {
-      return res.status(400).json({ error: 'Missing key parameter' });
-    }
-    // No need to check gist here if just generating license JSON; optionally you can include validity
-    const payload = { key };
-    const payloadJson = JSON.stringify(payload);
-    try {
-      const signer = crypto.createSign('RSA-SHA256');
-      signer.update(payloadJson);
-      signer.end();
-      const signature = signer.sign(PRIV_KEY, 'base64');
-      return res.status(200).json({ payload, signature });
-    } catch (err) {
-      console.error('Signing error:', err);
-      return res.status(500).json({ error: 'Signing failed' });
-    }
+    // Optional: return 405 or a message
+    return res.status(405).json({ error: 'Method not allowed' });
   }
-
-  // Method not allowed
-  res.setHeader('Allow', 'GET, POST');
-  if (req.method === 'POST') {
-    res.setHeader('Content-Type', 'text/plain');
-    return res.status(200).send('invalid');
-  }
+  // Other methods
   return res.status(405).json({ error: 'Method not allowed' });
 }
 
-// Helper to parse JSON body
+// Helper to parse JSON body from Node.js req
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
