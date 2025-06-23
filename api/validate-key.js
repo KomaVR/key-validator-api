@@ -1,4 +1,5 @@
 // api/validate-key.js
+import crypto from 'crypto';
 
 export default async function handler(req, res) {
   const key = req.query.key;
@@ -11,29 +12,30 @@ export default async function handler(req, res) {
   const PRIV_KEY   = process.env.RSA_PRIVATE_KEY;
 
   if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
-    console.error('Misconfigured env:', { GIST_TOKEN: !!GIST_TOKEN, GIST_ID, PRIV_KEY: !!PRIV_KEY });
+    console.error('Env missing:', {
+      GIST_TOKEN: !!GIST_TOKEN,
+      GIST_ID,
+      RSA_PRIVATE_KEY: !!PRIV_KEY
+    });
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  // 1) Fetch private gist
-  const gistUrl = `https://api.github.com/gists/${GIST_ID}`;
+  // Fetch private gist
   let gistResp;
   try {
-    gistResp = await fetch(gistUrl, {
+    gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       headers: {
-        'Authorization': `token ${GIST_TOKEN}`,
-        // 'Accept': 'application/vnd.github.v3+json' // optional
+        'Authorization': `token ${GIST_TOKEN}`
       }
     });
   } catch (err) {
-    console.error('Fetch error:', err);
-    return res.status(502).json({ error: 'Failed to fetch keys (network error)' });
+    console.error('Network error fetching gist:', err);
+    return res.status(502).json({ error: 'Failed to fetch keys (network)' });
   }
 
   const text = await gistResp.text();
   if (!gistResp.ok) {
     console.error('GitHub API error:', gistResp.status, text);
-    // If GitHub returns something like 415 or 406 Invalid API version, we'll see it here.
     return res.status(502).json({
       error: 'Failed to fetch keys',
       status: gistResp.status,
@@ -74,16 +76,15 @@ export default async function handler(req, res) {
   const payload = { key, valid, redeemed_by, redeemed_at };
   const payloadJson = JSON.stringify(payload);
 
-  // 2) Sign with RSA private key
+  // Sign with RSA private key
   try {
-    // In Node.js, crypto.createSign is synchronous
     const sign = crypto.createSign('RSA-SHA256');
     sign.update(payloadJson);
     sign.end();
     const signature = sign.sign(PRIV_KEY, 'base64');
     return res.status(200).json({ payload, signature });
   } catch (err) {
-    console.error('Signing error:', err);
+    console.error('Signing error', err);
     return res.status(500).json({ error: 'Signing failed' });
   }
 }
