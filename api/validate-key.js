@@ -1,36 +1,34 @@
-// api/validate-key.js
+// api/validate-key-simple.js
 import fetch from 'node-fetch';
-import crypto from 'crypto';
+
+export const config = {
+  runtime: 'nodejs', // if using Next.js App Router; otherwise ignore
+};
 
 export default async function handler(req, res) {
   const key = req.query.key;
   if (!key) {
-    return res.status(400).json({ error: 'Missing key parameter' });
+    // no key → treat as invalid
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send('invalid');
   }
 
-  // Grab env
   const GIST_TOKEN = process.env.GIST_TOKEN;
   const GIST_ID    = process.env.GIST_ID;
   const rawKey     = process.env.RSA_PRIVATE_KEY;
-  // If you ended up pasting literal "\n" sequences, you can transform here:
-  const PRIV_KEY = rawKey?.includes("\\n") ? rawKey.replace(/\\n/g, "\n") : rawKey;
+  const PRIV_KEY   = rawKey?.includes("\\n") ? rawKey.replace(/\\n/g, "\n") : rawKey;
 
-  // Debug: log presence (remove or lower in prod later)
-  console.log('>> ENV presence:', {
-    GIST_TOKEN: !!GIST_TOKEN,
-    GIST_ID: !!GIST_ID,
-    RSA_PRIVATE_KEY: !!PRIV_KEY
-  });
   if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
-    console.error('>> Server misconfigured: missing env var');
-    return res.status(500).json({ error: 'Server misconfigured' });
+    // misconfigured → optionally log, but return invalid so caller sees “invalid”
+    console.error('Server misconfigured: missing env var');
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send('invalid');
   }
 
-  // Build URL correctly
-  const gistUrl = `https://api.github.com/gists/${GIST_ID}`;
+  // fetch the gist
   let gistResp;
   try {
-    gistResp = await fetch(gistUrl, {
+    gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       headers: {
         'Authorization': `token ${GIST_TOKEN}`,
         'User-Agent': 'key-validator-api',
@@ -39,17 +37,13 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('Network error fetching gist:', err);
-    return res.status(502).json({ error: 'Failed to fetch keys (network)' });
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send('invalid');
   }
-
   if (!gistResp.ok) {
-    const text = await gistResp.text();
-    console.error('GitHub API error:', gistResp.status, text);
-    return res.status(502).json({
-      error: 'Failed to fetch keys',
-      status: gistResp.status,
-      body: text
-    });
+    console.error('GitHub API error:', gistResp.status);
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send('invalid');
   }
 
   let gistJson;
@@ -57,11 +51,12 @@ export default async function handler(req, res) {
     gistJson = await gistResp.json();
   } catch (err) {
     console.error('Invalid JSON from GitHub:', err);
-    return res.status(502).json({ error: 'Invalid JSON from GitHub' });
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send('invalid');
   }
 
   const file = gistJson.files?.['keys.txt'];
-  let found = false, redeemed_by = null, redeemed_at = null;
+  let found = false, redeemed_by = null;
   if (file && typeof file.content === 'string') {
     for (let line of file.content.split('\n')) {
       line = line.trim();
@@ -70,29 +65,15 @@ export default async function handler(req, res) {
       const [k, roleId, by, at] = parts;
       if (k === key) {
         found = true;
-        if (by) {
-          redeemed_by = by;
-          redeemed_at = at;
-        }
+        if (by) redeemed_by = by;
         break;
       }
     }
   } else {
-    console.warn('keys.txt missing or empty in gist:', gistJson.files);
+    console.warn('keys.txt missing or empty in gist');
   }
 
   const valid = found && redeemed_by === null;
-  const payload = { key, valid, redeemed_by, redeemed_at };
-  const payloadJson = JSON.stringify(payload);
-
-  try {
-    const sign = crypto.createSign('RSA-SHA256');
-    sign.update(payloadJson);
-    sign.end();
-    const signature = sign.sign(PRIV_KEY, 'base64');
-    return res.status(200).json({ payload, signature });
-  } catch (err) {
-    console.error('Signing error', err);
-    return res.status(500).json({ error: 'Signing failed' });
-  }
+  res.setHeader('Content-Type', 'text/plain');
+  return res.status(200).send(valid ? 'valid' : 'invalid');
 }
