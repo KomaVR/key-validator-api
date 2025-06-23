@@ -10,7 +10,6 @@ export default async function handler(req, res) {
 
   if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
     console.error('Server misconfigured: missing env var');
-    // For POST, we want plain-text invalid; for GET we return JSON error
     if (req.method === 'POST') {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
@@ -18,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  // Utility: fetch gist and check raw key presence/unredeemed
+  // Check raw key in gist (unredeemed)
   async function isKeyValidInGist(key) {
     try {
       const gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
@@ -45,7 +44,6 @@ export default async function handler(req, res) {
         const [k, roleId, by, at] = parts;
         if (k === key) {
           if (by && by.trim() !== '') {
-            // already redeemed
             return false;
           }
           return true;
@@ -58,11 +56,10 @@ export default async function handler(req, res) {
     }
   }
 
-  // Utility: verify signature over payload using public key derived from PRIV_KEY
+  // Verify signature over payloadObj = { key }
   function verifySignature(payloadObj, signatureB64) {
     try {
       const publicKeyObj = crypto.createPublicKey(PRIV_KEY);
-      // Re-create JSON string exactly as JS did: JSON.stringify(payloadObj)
       const payloadJson = JSON.stringify(payloadObj);
       const verifier = crypto.createVerify('RSA-SHA256');
       verifier.update(payloadJson);
@@ -76,7 +73,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    // Expect JSON body: { payload: {...}, signature: "base64..." }
+    // Expect JSON body: { payload: { key: "..." }, signature: "base64..." }
     let body;
     try {
       body = await parseJsonBody(req);
@@ -90,33 +87,31 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Verify signature
-    const sigOk = verifySignature(payload, signature);
-    if (!sigOk) {
-      console.warn('Signature invalid');
-      res.setHeader('Content-Type', 'text/plain');
-      return res.status(200).send('invalid');
-    }
-    // Extract key
     const key = payload.key;
     if (!key || typeof key !== 'string') {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Check in gist
+    // Verify signature over {"key": "..."}
+    if (!verifySignature({ key }, signature)) {
+      console.warn('Signature invalid');
+      res.setHeader('Content-Type', 'text/plain');
+      return res.status(200).send('invalid');
+    }
+    // Check key in gist
     const keyOk = await isKeyValidInGist(key);
     res.setHeader('Content-Type', 'text/plain');
     return res.status(200).send(keyOk ? 'valid' : 'invalid');
   }
 
   if (req.method === 'GET') {
-    // Legacy: generate license JSON { payload, signature }
+    // Sign payload { key } only
     const key = req.query.key;
     if (!key) {
       return res.status(400).json({ error: 'Missing key parameter' });
     }
-    const keyOk = await isKeyValidInGist(key);
-    const payload = { key, valid: keyOk, redeemed_by: null, redeemed_at: null };
+    // No need to check gist here if just generating license JSON; optionally you can include validity
+    const payload = { key };
     const payloadJson = JSON.stringify(payload);
     try {
       const signer = crypto.createSign('RSA-SHA256');
@@ -139,7 +134,7 @@ export default async function handler(req, res) {
   return res.status(405).json({ error: 'Method not allowed' });
 }
 
-// Helper to parse JSON body in Vercel serverless Node environment
+// Helper to parse JSON body
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
