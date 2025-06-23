@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   const HMAC_SECRET = process.env.HMAC_SECRET;
 
   if (!GIST_TOKEN || !GIST_ID || !HMAC_SECRET) {
-    console.error('Server misconfigured: missing GIST_TOKEN, GIST_ID, or HMAC_SECRET');
+    console.error('Server misconfigured: missing env vars');
     if (req.method === 'POST' || req.method === 'GET') {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
@@ -16,23 +16,20 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  // Helper to parse JSON body
+  // Helper: parse JSON POST body
   async function parseJsonBody(req) {
     return new Promise((resolve, reject) => {
       let data = '';
       req.on('data', chunk => data += chunk);
       req.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(e);
-        }
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
       });
       req.on('error', err => reject(err));
     });
   }
 
-  // Check key in gist (one-per-line in keys.txt)
+  // Check if key exists in gist (one per line)
   async function isKeyValidInGist(key) {
     try {
       const gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
@@ -43,54 +40,50 @@ export default async function handler(req, res) {
         }
       });
       if (!gistResp.ok) {
-        console.error('GitHub API error fetching gist:', gistResp.status);
+        console.error('GitHub fetch error:', gistResp.status);
         return false;
       }
       const gistJson = await gistResp.json();
       const file = gistJson.files?.['keys.txt'];
       if (!file || typeof file.content !== 'string') {
-        console.warn('keys.txt missing or empty in gist');
+        console.warn('keys.txt missing or empty');
         return false;
       }
-      const lines = file.content.split('\n');
-      for (let rawLine of lines) {
-        let line = rawLine.trim();
-        if (!line) continue;
-        if (line === key) {
-          return true;
-        }
-      }
-      return false;
+      const lines = file.content.split('\n').map(l => l.trim()).filter(l => l);
+      // Debug: uncomment if needed
+      // console.log('DEBUG gist lines:', lines);
+      return lines.includes(key);
     } catch (err) {
-      console.error('Error in isKeyValidInGist:', err);
+      console.error('Error reading gist:', err);
       return false;
     }
   }
 
-  // Verify HMAC over payloadObj = { key }
+  // Verify HMAC over {"key":"..."}
   function verifyHmacSignature(payloadObj, signatureHex) {
     try {
       const payloadJson = JSON.stringify(payloadObj);
       const hmacObj = crypto.createHmac('sha256', HMAC_SECRET);
       hmacObj.update(payloadJson);
       const expectedHex = hmacObj.digest('hex');
-      const sigBuf = Buffer.from(signatureHex, 'hex');
-      const expBuf = Buffer.from(expectedHex, 'hex');
-      if (sigBuf.length !== expBuf.length) return false;
-      return crypto.timingSafeEqual(sigBuf, expBuf);
+      // Debug logs:
+      // console.log('DEBUG payloadJson:', payloadJson);
+      // console.log('DEBUG expectedHex:', expectedHex, 'received:', signatureHex);
+      if (signatureHex.length !== expectedHex.length) return false;
+      return crypto.timingSafeEqual(Buffer.from(signatureHex,'hex'), Buffer.from(expectedHex,'hex'));
     } catch (err) {
-      console.error('HMAC verification error:', err);
+      console.error('HMAC verify error:', err);
       return false;
     }
   }
 
   if (req.method === 'POST') {
-    // Validate a license file
+    // Validate license file
     let body;
     try {
       body = await parseJsonBody(req);
     } catch (e) {
-      console.error('Failed to parse JSON body:', e);
+      console.error('Failed parse JSON body:', e);
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
@@ -104,30 +97,29 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Verify HMAC over {"key":"..."}
+    // Verify HMAC
     if (!verifyHmacSignature({ key }, signature)) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Check gist
-    const keyOk = await isKeyValidInGist(key);
+    // Lookup in gist
+    const ok = await isKeyValidInGist(key);
     res.setHeader('Content-Type', 'text/plain');
-    return res.status(200).send(keyOk ? 'valid' : 'invalid');
+    return res.status(200).send(ok ? 'valid' : 'invalid');
   }
 
   if (req.method === 'GET') {
-    // Generate a license if key is valid
+    // Optionally generate license via GET: curl -o license.lic "https://.../api/validate-key?key=XYZ"
     const key = req.query.key;
     if (!key || typeof key !== 'string') {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(400).send('invalid');
     }
-    const keyOk = await isKeyValidInGist(key);
-    if (!keyOk) {
+    const ok = await isKeyValidInGist(key);
+    if (!ok) {
       res.setHeader('Content-Type', 'text/plain');
       return res.status(200).send('invalid');
     }
-    // Build license: payload={"key":key}, issued_at now, signature=HMAC
     const issued_at = new Date().toISOString();
     const payloadObj = { key };
     const payloadJson = JSON.stringify(payloadObj);
@@ -139,12 +131,10 @@ export default async function handler(req, res) {
       issued_at,
       signature: signatureHex
     };
-    const respText = JSON.stringify(licenseBlob);
     res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(respText);
+    return res.status(200).send(JSON.stringify(licenseBlob));
   }
 
-  // Other methods not allowed
   res.setHeader('Allow', 'GET, POST');
   return res.status(405).json({ error: 'Method not allowed' });
 }
