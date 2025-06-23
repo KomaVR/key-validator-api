@@ -2,6 +2,10 @@
   "name": "key-validator-api",
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": "18.x" },
-  "dependencies": {}
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.1"
+  }
 }
