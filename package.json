@@ -1,0 +1,10 @@
+{
+  "name": "key-validator-api",
+  "version": "1.0.0",
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "node-fetch": "^3.0.0"
+  }
+}
