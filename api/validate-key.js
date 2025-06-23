@@ -1,4 +1,5 @@
 // validate-key.js
+console.log('DEBUG HMAC_SECRET length:', HMAC_SECRET ? HMAC_SECRET.length : 'undefined');
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 
