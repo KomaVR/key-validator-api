@@ -1,59 +1,34 @@
 // api/validate-key.js
+import fetch from 'node-fetch';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
   const key = req.query.key;
-  if (!key) {
-    return res.status(400).json({ error: 'Missing key parameter' });
-  }
+  if (!key) return res.status(400).json({ error: 'Missing key parameter' });
 
   const GIST_TOKEN = process.env.GIST_TOKEN;
   const GIST_ID    = process.env.GIST_ID;
-  const PRIV_KEY   = process.env.RSA_PRIVATE_KEY;
+  const PRIV_KEY   = process.env.RSA_PRIVATE_KEY; // full PEM
 
   if (!GIST_TOKEN || !GIST_ID || !PRIV_KEY) {
-    console.error('Env missing:', {
-      GIST_TOKEN: !!GIST_TOKEN,
-      GIST_ID,
-      RSA_PRIVATE_KEY: !!PRIV_KEY
-    });
     return res.status(500).json({ error: 'Server misconfigured' });
   }
 
   // Fetch private gist
-  let gistResp;
-  try {
-    gistResp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-      headers: {
-        'Authorization': `token ${GIST_TOKEN}`
-      }
-    });
-  } catch (err) {
-    console.error('Network error fetching gist:', err);
-    return res.status(502).json({ error: 'Failed to fetch keys (network)' });
-  }
-
-  const text = await gistResp.text();
+  const gistUrl = https://api.github.com/gists/${GIST_ID};
+  const gistResp = await fetch(gistUrl, {
+    headers: {
+      'Authorization': token ${GIST_TOKEN},
+      'Accept': 'application/vnd.github.v3+json'
+    }
+  });
   if (!gistResp.ok) {
-    console.error('GitHub API error:', gistResp.status, text);
-    return res.status(502).json({
-      error: 'Failed to fetch keys',
-      status: gistResp.status,
-      body: text
-    });
+    return res.status(502).json({ error: 'Failed to fetch keys' });
   }
-
-  let gist;
-  try {
-    gist = JSON.parse(text);
-  } catch (err) {
-    console.error('Invalid JSON from GitHub:', err, text);
-    return res.status(502).json({ error: 'Invalid JSON from GitHub' });
-  }
-
+  const gist = await gistResp.json();
   const file = gist.files?.['keys.txt'];
   let found = false, redeemed_by = null, redeemed_at = null;
-  if (file && typeof file.content === 'string') {
+  if (file && file.content) {
     for (let line of file.content.split('\n')) {
       line = line.trim();
       if (!line || line.startsWith('#')) continue;
@@ -68,10 +43,8 @@ export default async function handler(req, res) {
         break;
       }
     }
-  } else {
-    console.warn('keys.txt missing or empty in gist:', gist.files);
   }
-
+  // decide valid only if found and not redeemed
   const valid = found && redeemed_by === null;
   const payload = { key, valid, redeemed_by, redeemed_at };
   const payloadJson = JSON.stringify(payload);
